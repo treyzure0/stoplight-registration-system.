@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: stoplight-registration
+    runtime: python
+    pythonVersion: "3.11.9"
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --bind 0.0.0.0:$PORT --timeout 120
+    plan: free
+    disk:
+      name: stoplight-data
+      mountPath: /data
+      sizeGB: 1
