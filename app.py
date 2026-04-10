@@ -1,6 +1,6 @@
 """
 STOPLIGHT REGISTRATION SYSTEM
-Director-Grade Enterprise Application — Render Ready
+Director-Grade Enterprise Application
 """
 
 import os
@@ -14,7 +14,7 @@ from datetime import datetime, date, timedelta
 from functools import wraps
 
 from flask import (Flask, render_template, request, redirect, url_for,
-                   flash, session, jsonify, send_file, abort)
+                   flash, session, jsonify, send_file, abort, make_response)
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                           login_required, current_user)
@@ -23,15 +23,23 @@ from werkzeug.utils import secure_filename
 from sqlalchemy import func, or_
 
 import qrcode
-import openpyxl
 
-from reportlab.lib.pagesizes import A4
+
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
-from reportlab.lib.units import mm
+from reportlab.lib.units import mm, cm
 from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle, Paragraph,
                                   Spacer, Image as RLImage, HRFlowable)
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
+import openpyxl
+try:
+    import pandas as pd
+    PANDAS_OK = True
+except ImportError:
+    pd = None
+    PANDAS_OK = False
 
 # ─────────────────────────────────────────────
 # APP CONFIGURATION
@@ -40,13 +48,11 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-app.config['SQLALCHEMY_DATABASE_URI'] = (
-    f"sqlite:///{os.path.join(BASE_DIR, 'stoplight.db')}"
-)
+app.config['SECRET_KEY'] = secrets.token_hex(32)
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(BASE_DIR, 'stoplight.db')}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 
 ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -56,7 +62,6 @@ login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Please log in to access this page.'
 
-
 # ─────────────────────────────────────────────
 # DATABASE MODELS
 # ─────────────────────────────────────────────
@@ -65,8 +70,8 @@ class User(UserMixin, db.Model):
     __tablename__ = 'users'
     id            = db.Column(db.Integer, primary_key=True)
     username      = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(256), nullable=False)
-    role          = db.Column(db.String(20), nullable=False, default='staff')
+    password_hash = db.Column(db.String(200), nullable=False)
+    role          = db.Column(db.String(20), nullable=False, default='staff')  # 'superadmin' | 'staff'
     full_name     = db.Column(db.String(120))
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
     is_active     = db.Column(db.Boolean, default=True)
@@ -90,38 +95,36 @@ class School(db.Model):
     location   = db.Column(db.String(200))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'))
-    members    = db.relationship('SchoolMember', backref='school',
-                                  lazy=True, cascade='all, delete-orphan')
+    members    = db.relationship('SchoolMember', backref='school', lazy=True, cascade='all, delete-orphan')
 
 
 class SchoolMember(db.Model):
     __tablename__ = 'school_members'
-    id                = db.Column(db.Integer, primary_key=True)
-    unique_id         = db.Column(db.String(20), unique=True, nullable=False)
-    school_id         = db.Column(db.Integer, db.ForeignKey('schools.id'), nullable=False)
-    full_name         = db.Column(db.String(200), nullable=False)
-    role              = db.Column(db.String(50), nullable=False)
-    custom_role       = db.Column(db.String(100))
-    date_of_birth     = db.Column(db.Date)
+    id              = db.Column(db.Integer, primary_key=True)
+    unique_id       = db.Column(db.String(20), unique=True, nullable=False)
+    school_id       = db.Column(db.Integer, db.ForeignKey('schools.id'), nullable=False)
+    full_name       = db.Column(db.String(200), nullable=False)
+    role            = db.Column(db.String(50), nullable=False)   # Principal, Teacher, Student, etc.
+    custom_role     = db.Column(db.String(100))
+    date_of_birth   = db.Column(db.Date)
     area_of_residence = db.Column(db.String(200))
-    phone             = db.Column(db.String(30))
-    email             = db.Column(db.String(120))
-    photo_path        = db.Column(db.String(300))
-    qr_path           = db.Column(db.String(300))
-    created_at        = db.Column(db.DateTime, default=datetime.utcnow)
-    created_by        = db.Column(db.Integer, db.ForeignKey('users.id'))
+    phone           = db.Column(db.String(30))
+    email           = db.Column(db.String(120))
+    photo_path      = db.Column(db.String(300))
+    qr_path         = db.Column(db.String(300))
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by      = db.Column(db.Integer, db.ForeignKey('users.id'))
 
 
 class Family(db.Model):
     __tablename__ = 'families'
-    id                = db.Column(db.Integer, primary_key=True)
-    unique_id         = db.Column(db.String(20), unique=True, nullable=False)
-    family_name       = db.Column(db.String(200), nullable=False)
+    id            = db.Column(db.Integer, primary_key=True)
+    unique_id     = db.Column(db.String(20), unique=True, nullable=False)
+    family_name   = db.Column(db.String(200), nullable=False)
     area_of_residence = db.Column(db.String(200))
-    created_at        = db.Column(db.DateTime, default=datetime.utcnow)
-    created_by        = db.Column(db.Integer, db.ForeignKey('users.id'))
-    members           = db.relationship('FamilyMember', backref='family',
-                                         lazy=True, cascade='all, delete-orphan')
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by    = db.Column(db.Integer, db.ForeignKey('users.id'))
+    members       = db.relationship('FamilyMember', backref='family', lazy=True, cascade='all, delete-orphan')
 
 
 class FamilyMember(db.Model):
@@ -130,7 +133,7 @@ class FamilyMember(db.Model):
     unique_id         = db.Column(db.String(20), unique=True, nullable=False)
     family_id         = db.Column(db.Integer, db.ForeignKey('families.id'), nullable=False)
     full_name         = db.Column(db.String(200), nullable=False)
-    role              = db.Column(db.String(50), nullable=False)
+    role              = db.Column(db.String(50), nullable=False)  # Father, Mother, Child, etc.
     date_of_birth     = db.Column(db.Date)
     area_of_residence = db.Column(db.String(200))
     phone             = db.Column(db.String(30))
@@ -149,8 +152,7 @@ class Organization(db.Model):
     area_of_residence = db.Column(db.String(200))
     created_at        = db.Column(db.DateTime, default=datetime.utcnow)
     created_by        = db.Column(db.Integer, db.ForeignKey('users.id'))
-    members           = db.relationship('OrgMember', backref='organization',
-                                         lazy=True, cascade='all, delete-orphan')
+    members           = db.relationship('OrgMember', backref='organization', lazy=True, cascade='all, delete-orphan')
 
 
 class OrgMember(db.Model):
@@ -190,8 +192,7 @@ class SiteSettings(db.Model):
     id         = db.Column(db.Integer, primary_key=True)
     key        = db.Column(db.String(100), unique=True, nullable=False)
     value      = db.Column(db.Text)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
-                            onupdate=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ─────────────────────────────────────────────
@@ -220,8 +221,7 @@ def generate_password(length=14):
     alphabet = string.ascii_letters + string.digits + '!@#$%^'
     while True:
         pwd = ''.join(secrets.choice(alphabet) for _ in range(length))
-        if (any(c.islower() for c in pwd)
-                and any(c.isupper() for c in pwd)
+        if (any(c.islower() for c in pwd) and any(c.isupper() for c in pwd)
                 and any(c.isdigit() for c in pwd)):
             return pwd
 
@@ -243,74 +243,24 @@ def set_setting(key, value):
 
 
 def generate_qr_code(data: str, uid: str) -> str:
+    """Generate QR code PNG, save to uploads, return relative path."""
     qr = qrcode.QRCode(version=1, box_size=8, border=2,
                        error_correction=qrcode.constants.ERROR_CORRECT_H)
     qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color='black', back_color='white')
     fname = f"qr_{uid}.png"
-    img.save(os.path.join(app.config['UPLOAD_FOLDER'], fname))
+    fpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+    img.save(fpath)
     return fname
 
 
-def remove_qr(qr_path):
-    if qr_path:
-        full = os.path.join(app.config['UPLOAD_FOLDER'], qr_path)
-        if os.path.exists(full):
-            try:
-                os.remove(full)
-            except OSError:
-                pass
-
-
 def allowed_file(filename):
-    return ('.' in filename
-            and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS)
-
-
-def parse_date(s):
-    if not s:
-        return None
-    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y'):
-        try:
-            return datetime.strptime(str(s).strip(), fmt).date()
-        except ValueError:
-            pass
-    return None
-
-
-def safe_str(val):
-    return '' if val is None else str(val).strip()
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 # ─────────────────────────────────────────────
-# EXCEL READING — openpyxl only (no pandas)
-# ─────────────────────────────────────────────
-
-def read_excel_sheets(fpath):
-    wb = openpyxl.load_workbook(fpath, read_only=True, data_only=True)
-    sheets = {}
-    for name in wb.sheetnames:
-        ws = wb[name]
-        all_rows = [[c.value if c.value is not None else ''
-                     for c in row] for row in ws.iter_rows()]
-        if not all_rows:
-            sheets[name] = {'columns': [], 'rows': [], 'total': 0}
-            continue
-        headers = [str(h) for h in all_rows[0]]
-        data    = all_rows[1:]
-        sheets[name] = {'columns': headers, 'rows': data, 'total': len(data)}
-    wb.close()
-    return sheets
-
-
-def sheet_rows_as_dicts(sheet_data):
-    cols = sheet_data['columns']
-    return [dict(zip(cols, row)) for row in sheet_data['rows']]
-
-
-# ─────────────────────────────────────────────
-# DASHBOARD STATS
+# DASHBOARD STATS HELPER
 # ─────────────────────────────────────────────
 
 def get_dashboard_stats():
@@ -319,54 +269,54 @@ def get_dashboard_stats():
     total_families = Family.query.count()
     total_orgs     = Organization.query.count()
     total_indiv    = Individual.query.count()
-    total_people   = (SchoolMember.query.count() + FamilyMember.query.count()
-                      + OrgMember.query.count() + Individual.query.count())
+    total_people   = (SchoolMember.query.count() + FamilyMember.query.count() +
+                      OrgMember.query.count() + Individual.query.count())
 
+    # Category distribution for pie chart
     category_data = {
         'Schools':       SchoolMember.query.count(),
         'Families':      FamilyMember.query.count(),
         'Organizations': OrgMember.query.count(),
-        'Individuals':   Individual.query.count(),
+        'Individuals':   Individual.query.count()
     }
 
+    # Registrations over last 30 days
     thirty_ago = datetime.utcnow() - timedelta(days=30)
     daily_regs = []
     for i in range(30):
-        day      = thirty_ago + timedelta(days=i)
+        day = thirty_ago + timedelta(days=i)
         next_day = day + timedelta(days=1)
-        count = (
-            SchoolMember.query.filter(SchoolMember.created_at.between(day, next_day)).count()
-            + FamilyMember.query.filter(FamilyMember.created_at.between(day, next_day)).count()
-            + OrgMember.query.filter(OrgMember.created_at.between(day, next_day)).count()
-            + Individual.query.filter(Individual.created_at.between(day, next_day)).count()
-        )
+        count = (SchoolMember.query.filter(SchoolMember.created_at.between(day, next_day)).count() +
+                 FamilyMember.query.filter(FamilyMember.created_at.between(day, next_day)).count() +
+                 OrgMember.query.filter(OrgMember.created_at.between(day, next_day)).count() +
+                 Individual.query.filter(Individual.created_at.between(day, next_day)).count())
         daily_regs.append({'date': day.strftime('%b %d'), 'count': count})
 
-    top_schools = (
-        db.session.query(School.name, func.count(SchoolMember.id).label('cnt'))
-        .join(SchoolMember, School.id == SchoolMember.school_id)
-        .group_by(School.id)
-        .order_by(func.count(SchoolMember.id).desc())
-        .limit(5).all()
-    )
+    # Top schools by member count
+    top_schools = (db.session.query(School.name, func.count(SchoolMember.id).label('cnt'))
+                   .join(SchoolMember, School.id == SchoolMember.school_id)
+                   .group_by(School.id)
+                   .order_by(func.count(SchoolMember.id).desc())
+                   .limit(5).all())
 
+    # Recent registrations (last 10)
     recent = []
     for sm in SchoolMember.query.order_by(SchoolMember.created_at.desc()).limit(4).all():
         recent.append({'name': sm.full_name, 'category': 'School', 'role': sm.role,
-                       'area': sm.area_of_residence or '',
-                       'date': sm.created_at.strftime('%Y-%m-%d'), 'uid': sm.unique_id})
+                       'area': sm.area_of_residence or '', 'date': sm.created_at.strftime('%Y-%m-%d'),
+                       'uid': sm.unique_id})
     for fm in FamilyMember.query.order_by(FamilyMember.created_at.desc()).limit(4).all():
         recent.append({'name': fm.full_name, 'category': 'Family', 'role': fm.role,
-                       'area': fm.area_of_residence or '',
-                       'date': fm.created_at.strftime('%Y-%m-%d'), 'uid': fm.unique_id})
+                       'area': fm.area_of_residence or '', 'date': fm.created_at.strftime('%Y-%m-%d'),
+                       'uid': fm.unique_id})
     for om in OrgMember.query.order_by(OrgMember.created_at.desc()).limit(2).all():
-        recent.append({'name': om.full_name, 'category': 'Organization',
-                       'role': om.role or '', 'area': om.area_of_residence or '',
-                       'date': om.created_at.strftime('%Y-%m-%d'), 'uid': om.unique_id})
+        recent.append({'name': om.full_name, 'category': 'Organization', 'role': om.role or '',
+                       'area': om.area_of_residence or '', 'date': om.created_at.strftime('%Y-%m-%d'),
+                       'uid': om.unique_id})
     for ind in Individual.query.order_by(Individual.created_at.desc()).limit(2).all():
-        recent.append({'name': ind.full_name, 'category': 'Individual',
-                       'role': ind.occupation or '', 'area': ind.area_of_residence or '',
-                       'date': ind.created_at.strftime('%Y-%m-%d'), 'uid': ind.unique_id})
+        recent.append({'name': ind.full_name, 'category': 'Individual', 'role': ind.occupation or '',
+                       'area': ind.area_of_residence or '', 'date': ind.created_at.strftime('%Y-%m-%d'),
+                       'uid': ind.unique_id})
     recent.sort(key=lambda x: x['date'], reverse=True)
 
     return {
@@ -379,7 +329,7 @@ def get_dashboard_stats():
         'category_data':  category_data,
         'daily_regs':     daily_regs,
         'top_schools':    [(s[0], s[1]) for s in top_schools],
-        'recent':         recent[:10],
+        'recent':         recent[:10]
     }
 
 
@@ -404,7 +354,8 @@ def login():
         user = User.query.filter_by(username=username, is_active=True).first()
         if user and user.check_password(password):
             login_user(user, remember=True)
-            return redirect(request.args.get('next') or url_for('dashboard'))
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('dashboard'))
         flash('Invalid username or password.', 'error')
     return render_template('login.html')
 
@@ -440,8 +391,10 @@ def register_school():
     schools = School.query.order_by(School.name).all()
     if request.method == 'POST':
         action = request.form.get('action', 'new')
+        # Get or create school
         if action == 'existing':
-            school = db.session.get(School, request.form.get('school_id'))
+            school_id = request.form.get('school_id')
+            school = db.session.get(School, school_id)
             if not school:
                 flash('School not found.', 'error')
                 return redirect(url_for('register_school'))
@@ -451,7 +404,8 @@ def register_school():
             if not sname:
                 flash('School name is required.', 'error')
                 return redirect(url_for('register_school'))
-            if School.query.filter(func.lower(School.name) == sname.lower()).first():
+            existing = School.query.filter(func.lower(School.name) == sname.lower()).first()
+            if existing:
                 flash(f'School "{sname}" already exists. Use "Select Existing School".', 'warning')
                 return redirect(url_for('register_school'))
             school = School(unique_id=generate_uid('SCH'), name=sname,
@@ -459,6 +413,7 @@ def register_school():
             db.session.add(school)
             db.session.flush()
 
+        # Add members
         names  = request.form.getlist('member_name[]')
         roles  = request.form.getlist('member_role[]')
         custom = request.form.getlist('member_custom_role[]')
@@ -471,22 +426,29 @@ def register_school():
             name = name.strip()
             if not name:
                 continue
-            role  = roles[i]  if i < len(roles)  else 'Student'
+            role = roles[i] if i < len(roles) else 'Other'
             crole = custom[i] if i < len(custom) else ''
             area  = areas[i]  if i < len(areas)  else ''
-            dob   = parse_date(dobs[i] if i < len(dobs) else '')
-            phone = phones[i] if i < len(phones) else ''
-            uid     = generate_uid('SM')
-            qr_file = generate_qr_code(f"STOPLIGHT|SCHOOL|{uid}|{name}|{role}", uid)
-            db.session.add(SchoolMember(
-                unique_id=uid, school_id=school.id, full_name=name,
-                role=role, custom_role=crole, area_of_residence=area,
-                date_of_birth=dob, phone=phone, qr_path=qr_file,
-                created_by=current_user.id))
+            dob_s = dobs[i]   if i < len(dobs)   else ''
+            phone = phones[i] if i < len(phones)  else ''
+            dob = None
+            if dob_s:
+                try:
+                    dob = datetime.strptime(dob_s, '%Y-%m-%d').date()
+                except ValueError:
+                    pass
+            uid = generate_uid('SM')
+            qr_data = f"STOPLIGHT|SCHOOL|{uid}|{name}|{role}"
+            qr_file = generate_qr_code(qr_data, uid)
+            member = SchoolMember(unique_id=uid, school_id=school.id, full_name=name,
+                                  role=role, custom_role=crole, area_of_residence=area,
+                                  date_of_birth=dob, phone=phone, qr_path=qr_file,
+                                  created_by=current_user.id)
+            db.session.add(member)
             added += 1
 
         db.session.commit()
-        flash(f'Registered {added} member(s) under "{school.name}".', 'success')
+        flash(f'Successfully registered {added} member(s) under "{school.name}".', 'success')
         return redirect(url_for('view_school', school_id=school.id))
 
     return render_template('register_school.html', schools=schools,
@@ -497,20 +459,22 @@ def register_school():
 @app.route('/schools')
 @login_required
 def list_schools():
-    q       = request.args.get('q', '')
-    query   = School.query
+    q = request.args.get('q', '')
+    schools = School.query
     if q:
-        query = query.filter(School.name.ilike(f'%{q}%'))
-    schools = query.order_by(School.name).all()
+        schools = schools.filter(School.name.ilike(f'%{q}%'))
+    schools = schools.order_by(School.name).all()
     return render_template('list_schools.html', schools=schools, q=q,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
-                           page='list_school')
+                           page='school')
 
 
 @app.route('/schools/<int:school_id>')
 @login_required
 def view_school(school_id):
-    school  = db.session.get(School, school_id) or abort(404)
+    school  = db.session.get(School, school_id)
+    if not school:
+        abort(404)
     members = SchoolMember.query.filter_by(school_id=school_id).all()
     return render_template('view_school.html', school=school, members=members,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
@@ -528,7 +492,8 @@ def register_family():
     if request.method == 'POST':
         action = request.form.get('action', 'new')
         if action == 'existing':
-            family = db.session.get(Family, request.form.get('family_id'))
+            fam_id = request.form.get('family_id')
+            family = db.session.get(Family, fam_id)
             if not family:
                 flash('Family not found.', 'error')
                 return redirect(url_for('register_family'))
@@ -538,7 +503,8 @@ def register_family():
             if not fname_input:
                 flash('Family name is required.', 'error')
                 return redirect(url_for('register_family'))
-            if Family.query.filter(func.lower(Family.family_name) == fname_input.lower()).first():
+            existing = Family.query.filter(func.lower(Family.family_name) == fname_input.lower()).first()
+            if existing:
                 flash(f'Family "{fname_input}" already exists.', 'warning')
                 return redirect(url_for('register_family'))
             family = Family(unique_id=generate_uid('FAM'), family_name=fname_input,
@@ -557,20 +523,27 @@ def register_family():
             name = name.strip()
             if not name:
                 continue
-            role  = roles[i]  if i < len(roles)  else 'Other'
-            area  = areas[i]  if i < len(areas)  else family.area_of_residence or ''
-            dob   = parse_date(dobs[i] if i < len(dobs) else '')
+            role  = roles[i] if i < len(roles) else 'Other'
+            area  = areas[i] if i < len(areas) else family.area_of_residence or ''
+            dob_s = dobs[i]  if i < len(dobs)  else ''
             phone = phones[i] if i < len(phones) else ''
-            uid     = generate_uid('FM')
-            qr_file = generate_qr_code(f"STOPLIGHT|FAMILY|{uid}|{name}|{role}", uid)
-            db.session.add(FamilyMember(
-                unique_id=uid, family_id=family.id, full_name=name,
-                role=role, area_of_residence=area, date_of_birth=dob,
-                phone=phone, qr_path=qr_file, created_by=current_user.id))
+            dob = None
+            if dob_s:
+                try:
+                    dob = datetime.strptime(dob_s, '%Y-%m-%d').date()
+                except ValueError:
+                    pass
+            uid = generate_uid('FM')
+            qr_data = f"STOPLIGHT|FAMILY|{uid}|{name}|{role}"
+            qr_file = generate_qr_code(qr_data, uid)
+            member = FamilyMember(unique_id=uid, family_id=family.id, full_name=name,
+                                  role=role, area_of_residence=area, date_of_birth=dob,
+                                  phone=phone, qr_path=qr_file, created_by=current_user.id)
+            db.session.add(member)
             added += 1
 
         db.session.commit()
-        flash(f'Registered {added} member(s) to the {family.family_name} family.', 'success')
+        flash(f'Successfully registered {added} member(s) to the {family.family_name} family.', 'success')
         return redirect(url_for('view_family', family_id=family.id))
 
     return render_template('register_family.html', families=families,
@@ -581,20 +554,22 @@ def register_family():
 @app.route('/families')
 @login_required
 def list_families():
-    q        = request.args.get('q', '')
-    query    = Family.query
+    q = request.args.get('q', '')
+    families = Family.query
     if q:
-        query = query.filter(Family.family_name.ilike(f'%{q}%'))
-    families = query.order_by(Family.family_name).all()
+        families = families.filter(Family.family_name.ilike(f'%{q}%'))
+    families = families.order_by(Family.family_name).all()
     return render_template('list_families.html', families=families, q=q,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
-                           page='list_family')
+                           page='family')
 
 
 @app.route('/families/<int:family_id>')
 @login_required
 def view_family(family_id):
-    family  = db.session.get(Family, family_id) or abort(404)
+    family  = db.session.get(Family, family_id)
+    if not family:
+        abort(404)
     members = FamilyMember.query.filter_by(family_id=family_id).all()
     return render_template('view_family.html', family=family, members=members,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
@@ -610,9 +585,10 @@ def view_family(family_id):
 def register_organization():
     orgs = Organization.query.order_by(Organization.name).all()
     if request.method == 'POST':
-        action = request.form.get('action', 'new')
+        action  = request.form.get('action', 'new')
         if action == 'existing':
-            org = db.session.get(Organization, request.form.get('org_id'))
+            org_id = request.form.get('org_id')
+            org    = db.session.get(Organization, org_id)
             if not org:
                 flash('Organization not found.', 'error')
                 return redirect(url_for('register_organization'))
@@ -622,7 +598,8 @@ def register_organization():
             if not org_name:
                 flash('Organization name is required.', 'error')
                 return redirect(url_for('register_organization'))
-            if Organization.query.filter(func.lower(Organization.name) == org_name.lower()).first():
+            existing = Organization.query.filter(func.lower(Organization.name) == org_name.lower()).first()
+            if existing:
                 flash(f'Organization "{org_name}" already exists.', 'warning')
                 return redirect(url_for('register_organization'))
             org = Organization(unique_id=generate_uid('ORG'), name=org_name,
@@ -640,19 +617,20 @@ def register_organization():
             name = name.strip()
             if not name:
                 continue
-            role  = roles[i]  if i < len(roles)  else ''
-            area  = areas[i]  if i < len(areas)  else org.area_of_residence or ''
+            role  = roles[i] if i < len(roles) else ''
+            area  = areas[i] if i < len(areas) else org.area_of_residence or ''
             phone = phones[i] if i < len(phones) else ''
-            uid     = generate_uid('OM')
-            qr_file = generate_qr_code(f"STOPLIGHT|ORG|{uid}|{name}|{role}", uid)
-            db.session.add(OrgMember(
-                unique_id=uid, org_id=org.id, full_name=name,
-                role=role, area_of_residence=area, phone=phone,
-                qr_path=qr_file, created_by=current_user.id))
+            uid = generate_uid('OM')
+            qr_data = f"STOPLIGHT|ORG|{uid}|{name}|{role}"
+            qr_file = generate_qr_code(qr_data, uid)
+            member = OrgMember(unique_id=uid, org_id=org.id, full_name=name,
+                               role=role, area_of_residence=area, phone=phone,
+                               qr_path=qr_file, created_by=current_user.id)
+            db.session.add(member)
             added += 1
 
         db.session.commit()
-        flash(f'Registered {added} member(s) to "{org.name}".', 'success')
+        flash(f'Successfully registered {added} member(s) to "{org.name}".', 'success')
         return redirect(url_for('view_organization', org_id=org.id))
 
     return render_template('register_organization.html', orgs=orgs,
@@ -663,20 +641,22 @@ def register_organization():
 @app.route('/organizations')
 @login_required
 def list_organizations():
-    q    = request.args.get('q', '')
-    query = Organization.query
+    q = request.args.get('q', '')
+    orgs = Organization.query
     if q:
-        query = query.filter(Organization.name.ilike(f'%{q}%'))
-    orgs = query.order_by(Organization.name).all()
+        orgs = orgs.filter(Organization.name.ilike(f'%{q}%'))
+    orgs = orgs.order_by(Organization.name).all()
     return render_template('list_organizations.html', orgs=orgs, q=q,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
-                           page='list_org')
+                           page='organization')
 
 
 @app.route('/organizations/<int:org_id>')
 @login_required
 def view_organization(org_id):
-    org     = db.session.get(Organization, org_id) or abort(404)
+    org     = db.session.get(Organization, org_id)
+    if not org:
+        abort(404)
     members = OrgMember.query.filter_by(org_id=org_id).all()
     return render_template('view_organization.html', org=org, members=members,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
@@ -693,7 +673,7 @@ def register_individual():
     if request.method == 'POST':
         full_name  = request.form.get('full_name', '').strip()
         occupation = request.form.get('occupation', '').strip()
-        dob        = parse_date(request.form.get('date_of_birth', ''))
+        dob_s      = request.form.get('date_of_birth', '')
         area       = request.form.get('area_of_residence', '').strip()
         phone      = request.form.get('phone', '').strip()
         email      = request.form.get('email', '').strip()
@@ -702,20 +682,30 @@ def register_individual():
             flash('Full name is required.', 'error')
             return redirect(url_for('register_individual'))
 
-        if Individual.query.filter(func.lower(Individual.full_name) == full_name.lower()).first():
-            flash(f'"{full_name}" is already registered.', 'warning')
+        # Duplicate check
+        existing = Individual.query.filter(
+            func.lower(Individual.full_name) == full_name.lower()
+        ).first()
+        if existing:
+            flash(f'An individual named "{full_name}" is already registered (ID: {existing.unique_id}).', 'warning')
             return redirect(url_for('register_individual'))
 
-        uid     = generate_uid('IND')
-        qr_file = generate_qr_code(
-            f"STOPLIGHT|INDIVIDUAL|{uid}|{full_name}|{occupation}", uid)
-        db.session.add(Individual(
-            unique_id=uid, full_name=full_name, occupation=occupation,
-            date_of_birth=dob, area_of_residence=area,
-            phone=phone, email=email, qr_path=qr_file,
-            created_by=current_user.id))
+        dob = None
+        if dob_s:
+            try:
+                dob = datetime.strptime(dob_s, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+
+        uid = generate_uid('IND')
+        qr_data = f"STOPLIGHT|INDIVIDUAL|{uid}|{full_name}|{occupation}"
+        qr_file = generate_qr_code(qr_data, uid)
+        ind = Individual(unique_id=uid, full_name=full_name, occupation=occupation,
+                         date_of_birth=dob, area_of_residence=area, phone=phone,
+                         email=email, qr_path=qr_file, created_by=current_user.id)
+        db.session.add(ind)
         db.session.commit()
-        flash(f'"{full_name}" registered successfully (ID: {uid}).', 'success')
+        flash(f'Individual "{full_name}" registered successfully (ID: {uid}).', 'success')
         return redirect(url_for('list_individuals'))
 
     return render_template('register_individual.html',
@@ -726,21 +716,19 @@ def register_individual():
 @app.route('/individuals')
 @login_required
 def list_individuals():
-    q    = request.args.get('q', '')
-    query = Individual.query
+    q = request.args.get('q', '')
+    inds = Individual.query
     if q:
-        query = query.filter(or_(
-            Individual.full_name.ilike(f'%{q}%'),
-            Individual.occupation.ilike(f'%{q}%'),
-            Individual.area_of_residence.ilike(f'%{q}%')))
-    inds = query.order_by(Individual.full_name).all()
+        inds = inds.filter(or_(Individual.full_name.ilike(f'%{q}%'),
+                                Individual.occupation.ilike(f'%{q}%')))
+    inds = inds.order_by(Individual.full_name).all()
     return render_template('list_individuals.html', individuals=inds, q=q,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
-                           page='list_indiv')
+                           page='individual')
 
 
 # ─────────────────────────────────────────────
-# EXCEL IMPORT  (openpyxl only — no pandas)
+# EXCEL IMPORT
 # ─────────────────────────────────────────────
 
 @app.route('/import', methods=['GET', 'POST'])
@@ -751,31 +739,34 @@ def import_excel():
             flash('No file selected.', 'error')
             return redirect(url_for('import_excel'))
         f = request.files['file']
-        if not f.filename or not allowed_file(f.filename):
+        if f.filename == '' or not allowed_file(f.filename):
             flash('Please upload a valid Excel file (.xlsx or .xls).', 'error')
             return redirect(url_for('import_excel'))
 
         filename = secure_filename(f.filename)
-        fpath    = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        fpath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         f.save(fpath)
 
         try:
-            sheets  = read_excel_sheets(fpath)
-            preview = {
-                name: {
-                    'columns': d['columns'],
-                    'rows':    d['rows'][:5],
-                    'total':   d['total'],
+            xl = pd.ExcelFile(fpath)
+            preview = {}
+            for sheet in xl.sheet_names:
+                df = xl.parse(sheet).fillna('')
+                preview[sheet] = {
+                    'columns': list(df.columns),
+                    'rows':    df.head(5).values.tolist(),
+                    'total':   len(df)
                 }
-                for name, d in sheets.items()
-            }
             session['import_file'] = fpath
-            return render_template('import_preview.html', preview=preview,
-                                   filename=filename,
+            session['import_preview'] = json.dumps({
+                k: {**v, 'rows': [list(r) for r in v['rows']]}
+                for k, v in preview.items()
+            })
+            return render_template('import_preview.html', preview=preview, filename=filename,
                                    company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
                                    page='import')
         except Exception as e:
-            flash(f'Error reading file: {e}', 'error')
+            flash(f'Error reading file: {str(e)}', 'error')
             return redirect(url_for('import_excel'))
 
     return render_template('import_excel.html',
@@ -791,128 +782,130 @@ def import_confirm():
         flash('Import session expired. Please re-upload.', 'error')
         return redirect(url_for('import_excel'))
 
-    try:
-        sheets = read_excel_sheets(fpath)
-    except Exception as e:
-        flash(f'Could not read file: {e}', 'error')
-        return redirect(url_for('import_excel'))
+    xl       = pd.ExcelFile(fpath)
+    imported = 0
+    errors   = []
 
-    imported, errors = 0, []
+    for sheet in xl.sheet_names:
+        df   = xl.parse(sheet).fillna('')
+        cats = sheet.strip().lower()
 
-    for sheet_name, sheet_data in sheets.items():
-        rows = sheet_rows_as_dicts(sheet_data)
-        cat  = sheet_name.strip().lower()
-
-        if 'individual' in cat:
-            for row in rows:
+        if 'individual' in cats:
+            for _, row in df.iterrows():
                 try:
-                    name = safe_str(row.get('Full Name') or row.get('full_name'))
+                    name = str(row.get('Full Name', row.get('full_name', ''))).strip()
                     if not name:
                         continue
-                    if Individual.query.filter(
-                            func.lower(Individual.full_name) == name.lower()).first():
+                    if Individual.query.filter(func.lower(Individual.full_name) == name.lower()).first():
                         continue
-                    uid     = generate_uid('IND')
-                    qr_file = generate_qr_code(f"STOPLIGHT|INDIVIDUAL|{uid}|{name}", uid)
-                    db.session.add(Individual(
-                        unique_id=uid, full_name=name,
-                        occupation=safe_str(row.get('Occupation')),
-                        date_of_birth=parse_date(row.get('Date of Birth')),
-                        area_of_residence=safe_str(row.get('Area of Residence')),
-                        phone=safe_str(row.get('Phone')),
-                        qr_path=qr_file, created_by=current_user.id))
+                    uid = generate_uid('IND')
+                    dob_raw = row.get('Date of Birth', row.get('date_of_birth', ''))
+                    dob = None
+                    if dob_raw:
+                        try:
+                            dob = pd.to_datetime(dob_raw).date()
+                        except Exception:
+                            pass
+                    qr_data = f"STOPLIGHT|INDIVIDUAL|{uid}|{name}"
+                    qr_file = generate_qr_code(qr_data, uid)
+                    ind = Individual(unique_id=uid, full_name=name,
+                                     occupation=str(row.get('Occupation', '')),
+                                     date_of_birth=dob,
+                                     area_of_residence=str(row.get('Area of Residence', '')),
+                                     phone=str(row.get('Phone', '')),
+                                     qr_path=qr_file, created_by=current_user.id)
+                    db.session.add(ind)
                     imported += 1
                 except Exception as e:
                     errors.append(str(e))
 
-        elif 'school' in cat:
-            for row in rows:
+        elif 'school' in cats:
+            for _, row in df.iterrows():
                 try:
-                    sname = safe_str(row.get('School Name') or row.get('school_name')) or 'Imported School'
-                    mname = safe_str(row.get('Full Name') or row.get('full_name'))
+                    sname = str(row.get('School Name', row.get('school_name', ''))).strip()
+                    mname = str(row.get('Full Name', row.get('full_name', ''))).strip()
                     if not mname:
                         continue
-                    school = School.query.filter(
-                        func.lower(School.name) == sname.lower()).first()
+                    if not sname:
+                        sname = 'Imported School'
+                    school = School.query.filter(func.lower(School.name) == sname.lower()).first()
                     if not school:
                         school = School(unique_id=generate_uid('SCH'), name=sname,
-                                        location=safe_str(row.get('Location')),
+                                        location=str(row.get('Location', '')),
                                         created_by=current_user.id)
                         db.session.add(school)
                         db.session.flush()
-                    uid     = generate_uid('SM')
-                    role    = safe_str(row.get('Role')) or 'Student'
-                    qr_file = generate_qr_code(
-                        f"STOPLIGHT|SCHOOL|{uid}|{mname}|{role}", uid)
-                    db.session.add(SchoolMember(
-                        unique_id=uid, school_id=school.id, full_name=mname,
-                        role=role,
-                        area_of_residence=safe_str(row.get('Area of Residence')),
-                        qr_path=qr_file, created_by=current_user.id))
+                    uid = generate_uid('SM')
+                    role = str(row.get('Role', 'Student'))
+                    qr_data = f"STOPLIGHT|SCHOOL|{uid}|{mname}|{role}"
+                    qr_file = generate_qr_code(qr_data, uid)
+                    m = SchoolMember(unique_id=uid, school_id=school.id, full_name=mname,
+                                     role=role, area_of_residence=str(row.get('Area of Residence', '')),
+                                     qr_path=qr_file, created_by=current_user.id)
+                    db.session.add(m)
                     imported += 1
                 except Exception as e:
                     errors.append(str(e))
 
-        elif 'family' in cat:
-            for row in rows:
+        elif 'family' in cats:
+            for _, row in df.iterrows():
                 try:
-                    fname = safe_str(row.get('Family Name') or row.get('family_name')) or 'Imported Family'
-                    mname = safe_str(row.get('Full Name') or row.get('full_name'))
+                    fname = str(row.get('Family Name', row.get('family_name', ''))).strip()
+                    mname = str(row.get('Full Name', row.get('full_name', ''))).strip()
                     if not mname:
                         continue
-                    fam = Family.query.filter(
-                        func.lower(Family.family_name) == fname.lower()).first()
+                    if not fname:
+                        fname = 'Imported Family'
+                    fam = Family.query.filter(func.lower(Family.family_name) == fname.lower()).first()
                     if not fam:
                         fam = Family(unique_id=generate_uid('FAM'), family_name=fname,
-                                     area_of_residence=safe_str(row.get('Area of Residence')),
+                                     area_of_residence=str(row.get('Area of Residence', '')),
                                      created_by=current_user.id)
                         db.session.add(fam)
                         db.session.flush()
-                    uid     = generate_uid('FM')
-                    role    = safe_str(row.get('Role')) or 'Member'
-                    qr_file = generate_qr_code(
-                        f"STOPLIGHT|FAMILY|{uid}|{mname}|{role}", uid)
-                    db.session.add(FamilyMember(
-                        unique_id=uid, family_id=fam.id, full_name=mname,
-                        role=role,
-                        area_of_residence=safe_str(row.get('Area of Residence')),
-                        qr_path=qr_file, created_by=current_user.id))
+                    uid = generate_uid('FM')
+                    role = str(row.get('Role', 'Member'))
+                    qr_data = f"STOPLIGHT|FAMILY|{uid}|{mname}|{role}"
+                    qr_file = generate_qr_code(qr_data, uid)
+                    m = FamilyMember(unique_id=uid, family_id=fam.id, full_name=mname,
+                                     role=role, area_of_residence=str(row.get('Area of Residence', '')),
+                                     qr_path=qr_file, created_by=current_user.id)
+                    db.session.add(m)
                     imported += 1
                 except Exception as e:
                     errors.append(str(e))
 
-        elif 'org' in cat:
-            for row in rows:
+        elif 'org' in cats:
+            for _, row in df.iterrows():
                 try:
-                    oname = safe_str(row.get('Organization Name') or row.get('org_name')) or 'Imported Org'
-                    mname = safe_str(row.get('Full Name') or row.get('full_name'))
+                    oname = str(row.get('Organization Name', row.get('org_name', ''))).strip()
+                    mname = str(row.get('Full Name', row.get('full_name', ''))).strip()
                     if not mname:
                         continue
-                    org = Organization.query.filter(
-                        func.lower(Organization.name) == oname.lower()).first()
+                    if not oname:
+                        oname = 'Imported Organization'
+                    org = Organization.query.filter(func.lower(Organization.name) == oname.lower()).first()
                     if not org:
                         org = Organization(unique_id=generate_uid('ORG'), name=oname,
-                                           area_of_residence=safe_str(row.get('Area of Residence')),
+                                           area_of_residence=str(row.get('Area of Residence', '')),
                                            created_by=current_user.id)
                         db.session.add(org)
                         db.session.flush()
-                    uid     = generate_uid('OM')
-                    role    = safe_str(row.get('Role'))
-                    qr_file = generate_qr_code(
-                        f"STOPLIGHT|ORG|{uid}|{mname}|{role}", uid)
-                    db.session.add(OrgMember(
-                        unique_id=uid, org_id=org.id, full_name=mname,
-                        role=role,
-                        area_of_residence=safe_str(row.get('Area of Residence')),
-                        phone=safe_str(row.get('Phone')),
-                        qr_path=qr_file, created_by=current_user.id))
+                    uid = generate_uid('OM')
+                    role = str(row.get('Role', ''))
+                    qr_data = f"STOPLIGHT|ORG|{uid}|{mname}|{role}"
+                    qr_file = generate_qr_code(qr_data, uid)
+                    m = OrgMember(unique_id=uid, org_id=org.id, full_name=mname,
+                                  role=role, area_of_residence=str(row.get('Area of Residence', '')),
+                                  phone=str(row.get('Phone', '')),
+                                  qr_path=qr_file, created_by=current_user.id)
+                    db.session.add(m)
                     imported += 1
                 except Exception as e:
                     errors.append(str(e))
 
     db.session.commit()
-    cat = 'success' if not errors else 'warning'
-    flash(f'Import complete: {imported} records added, {len(errors)} error(s).', cat)
+    flash(f'Import complete: {imported} records added. {len(errors)} error(s).', 'success' if not errors else 'warning')
     return redirect(url_for('dashboard'))
 
 
@@ -920,44 +913,51 @@ def import_confirm():
 # ID CARD + QR CODE
 # ─────────────────────────────────────────────
 
-def _resolve_record(category, record_id):
-    if category == 'school':
-        r = db.session.get(SchoolMember, record_id)
-        return r, 'School', (r.school.name if r else ''), \
-               (r.custom_role or r.role if r else '')
-    if category == 'family':
-        r = db.session.get(FamilyMember, record_id)
-        return r, 'Family', (r.family.family_name if r else ''), \
-               (r.role if r else '')
-    if category == 'org':
-        r = db.session.get(OrgMember, record_id)
-        return r, 'Organization', (r.organization.name if r else ''), \
-               (r.role or '' if r else '')
-    if category == 'individual':
-        r = db.session.get(Individual, record_id)
-        return r, 'Individual', '', (r.occupation or '' if r else '')
-    return None, '', '', ''
-
-
-def _b64_file(path):
-    if path and os.path.exists(path):
-        with open(path, 'rb') as fh:
-            return base64.b64encode(fh.read()).decode()
-    return ''
-
-
 @app.route('/id-card/<category>/<int:record_id>')
 @login_required
 def view_id_card(category, record_id):
-    record, cat_name, group, _ = _resolve_record(category, record_id)
+    record   = None
+    cat_name = ''
+    group    = ''
+
+    if category == 'school':
+        record   = db.session.get(SchoolMember, record_id)
+        cat_name = 'School'
+        if record:
+            group = record.school.name
+    elif category == 'family':
+        record   = db.session.get(FamilyMember, record_id)
+        cat_name = 'Family'
+        if record:
+            group = record.family.family_name
+    elif category == 'org':
+        record   = db.session.get(OrgMember, record_id)
+        cat_name = 'Organization'
+        if record:
+            group = record.organization.name
+    elif category == 'individual':
+        record   = db.session.get(Individual, record_id)
+        cat_name = 'Individual'
+
     if not record:
         abort(404)
-    qr_b64   = _b64_file(os.path.join(app.config['UPLOAD_FOLDER'],
-                                       record.qr_path or ''))
-    logo_b64 = _b64_file(get_setting('logo_path', ''))
+
+    qr_img_b64 = ''
+    if record.qr_path:
+        qr_path = os.path.join(app.config['UPLOAD_FOLDER'], record.qr_path)
+        if os.path.exists(qr_path):
+            with open(qr_path, 'rb') as qf:
+                qr_img_b64 = base64.b64encode(qf.read()).decode()
+
+    logo_b64 = ''
+    logo_path = get_setting('logo_path', '')
+    if logo_path and os.path.exists(logo_path):
+        with open(logo_path, 'rb') as lf:
+            logo_b64 = base64.b64encode(lf.read()).decode()
+
     return render_template('id_card.html', record=record, category=category,
                            cat_name=cat_name, group=group,
-                           qr_img_b64=qr_b64, logo_b64=logo_b64,
+                           qr_img_b64=qr_img_b64, logo_b64=logo_b64,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
                            page='id_card')
 
@@ -965,55 +965,83 @@ def view_id_card(category, record_id):
 @app.route('/id-card/pdf/<category>/<int:record_id>')
 @login_required
 def download_id_card_pdf(category, record_id):
-    record, cat_name, group, role = _resolve_record(category, record_id)
+    record   = None
+    cat_name = ''
+    group    = ''
+    role     = ''
+
+    if category == 'school':
+        record   = db.session.get(SchoolMember, record_id)
+        cat_name = 'School'
+        if record:
+            group = record.school.name
+            role  = record.custom_role or record.role
+    elif category == 'family':
+        record   = db.session.get(FamilyMember, record_id)
+        cat_name = 'Family'
+        if record:
+            group = record.family.family_name
+            role  = record.role
+    elif category == 'org':
+        record   = db.session.get(OrgMember, record_id)
+        cat_name = 'Organization'
+        if record:
+            group = record.organization.name
+            role  = record.role or ''
+    elif category == 'individual':
+        record   = db.session.get(Individual, record_id)
+        cat_name = 'Individual'
+        if record:
+            role = record.occupation or ''
+
     if not record:
         abort(404)
 
-    buf    = io.BytesIO()
+    buf = io.BytesIO()
     card_w = 86 * mm
     card_h = 54 * mm
-    doc    = SimpleDocTemplate(buf, pagesize=(card_w, card_h),
-                               leftMargin=4*mm, rightMargin=4*mm,
-                               topMargin=4*mm, bottomMargin=4*mm)
-    company  = get_setting('company_name', 'STOPLIGHT SYSTEM')
-    title_st = ParagraphStyle('t',  fontSize=7, fontName='Helvetica-Bold',
-                               alignment=TA_CENTER,
-                               textColor=colors.HexColor('#0a2342'), spaceAfter=1*mm)
-    name_st  = ParagraphStyle('n',  fontSize=9, fontName='Helvetica-Bold',
-                               alignment=TA_CENTER,
-                               textColor=colors.HexColor('#0a2342'), spaceAfter=1*mm)
-    body_st  = ParagraphStyle('b',  fontSize=6.5, fontName='Helvetica',
-                               alignment=TA_CENTER,
-                               textColor=colors.HexColor('#333333'), spaceAfter=0.5*mm)
-    id_st    = ParagraphStyle('id', fontSize=6, fontName='Helvetica-Bold',
-                               alignment=TA_CENTER,
-                               textColor=colors.HexColor('#1b6ca8'))
-    story = []
+    doc = SimpleDocTemplate(buf, pagesize=(card_w, card_h),
+                            leftMargin=4*mm, rightMargin=4*mm,
+                            topMargin=4*mm, bottomMargin=4*mm)
+
+    styles   = getSampleStyleSheet()
+    story    = []
+    title_st = ParagraphStyle('title', fontSize=7, textColor=colors.HexColor('#0a2342'),
+                               alignment=TA_CENTER, fontName='Helvetica-Bold', spaceAfter=1*mm)
+    name_st  = ParagraphStyle('name', fontSize=9, textColor=colors.HexColor('#0a2342'),
+                               alignment=TA_CENTER, fontName='Helvetica-Bold', spaceAfter=1*mm)
+    body_st  = ParagraphStyle('body', fontSize=6.5, textColor=colors.HexColor('#333333'),
+                               alignment=TA_CENTER, spaceAfter=0.5*mm)
+    id_st    = ParagraphStyle('id', fontSize=6, textColor=colors.HexColor('#1b6ca8'),
+                               alignment=TA_CENTER, fontName='Helvetica-Bold')
+
+    company = get_setting('company_name', 'STOPLIGHT SYSTEM')
+
     logo_path = get_setting('logo_path', '')
     if logo_path and os.path.exists(logo_path):
         story.append(RLImage(logo_path, width=12*mm, height=8*mm))
+
     story.append(Paragraph(company.upper(), title_st))
-    story.append(HRFlowable(width='100%', thickness=0.5,
-                             color=colors.HexColor('#1b6ca8')))
+    story.append(HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#1b6ca8')))
     story.append(Spacer(1, 1*mm))
+
     if record.qr_path:
-        qr_full = os.path.join(app.config['UPLOAD_FOLDER'], record.qr_path)
-        if os.path.exists(qr_full):
-            story.append(RLImage(qr_full, width=18*mm, height=18*mm))
-    story += [
-        Spacer(1, 1*mm),
-        Paragraph(record.full_name.upper(), name_st),
-        Paragraph(role.upper(), body_st),
-        Paragraph(f"{cat_name}{(' | ' + group) if group else ''}", body_st),
-        Spacer(1, 1*mm),
-        HRFlowable(width='100%', thickness=0.3, color=colors.grey),
-        Paragraph(f"ID: {record.unique_id}", id_st),
-        Paragraph('Signature: _________________', body_st),
-    ]
+        qr_path = os.path.join(app.config['UPLOAD_FOLDER'], record.qr_path)
+        if os.path.exists(qr_path):
+            story.append(RLImage(qr_path, width=18*mm, height=18*mm))
+
+    story.append(Spacer(1, 1*mm))
+    story.append(Paragraph(record.full_name.upper(), name_st))
+    story.append(Paragraph(role.upper(), body_st))
+    story.append(Paragraph(f"{cat_name}{' | ' + group if group else ''}", body_st))
+    story.append(Spacer(1, 1*mm))
+    story.append(HRFlowable(width='100%', thickness=0.3, color=colors.grey))
+    story.append(Paragraph(f"ID: {record.unique_id}", id_st))
+    story.append(Paragraph('Signature: _________________', body_st))
+
     doc.build(story)
     buf.seek(0)
-    return send_file(buf, as_attachment=True,
-                     download_name=f"ID_{record.unique_id}.pdf",
+    return send_file(buf, as_attachment=True, download_name=f"ID_{record.unique_id}.pdf",
                      mimetype='application/pdf')
 
 
@@ -1024,7 +1052,9 @@ def download_id_card_pdf(category, record_id):
 @app.route('/print/school/<int:school_id>')
 @login_required
 def print_school(school_id):
-    school  = db.session.get(School, school_id) or abort(404)
+    school  = db.session.get(School, school_id)
+    if not school:
+        abort(404)
     members = SchoolMember.query.filter_by(school_id=school_id).all()
     return render_template('print_school.html', school=school, members=members,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
@@ -1034,7 +1064,9 @@ def print_school(school_id):
 @app.route('/print/family/<int:family_id>')
 @login_required
 def print_family(family_id):
-    family  = db.session.get(Family, family_id) or abort(404)
+    family  = db.session.get(Family, family_id)
+    if not family:
+        abort(404)
     members = FamilyMember.query.filter_by(family_id=family_id).all()
     return render_template('print_family.html', family=family, members=members,
                            company=get_setting('company_name', 'STOPLIGHT SYSTEM'),
@@ -1051,7 +1083,7 @@ def print_individuals():
 
 
 # ─────────────────────────────────────────────
-# SETTINGS  (Super Admin only)
+# SETTINGS (Admin only)
 # ─────────────────────────────────────────────
 
 @app.route('/settings', methods=['GET', 'POST'])
@@ -1062,14 +1094,15 @@ def settings():
         cname = request.form.get('company_name', '').strip()
         if cname:
             set_setting('company_name', cname)
-        logo = request.files.get('logo')
-        if logo and logo.filename:
-            ext = logo.filename.rsplit('.', 1)[-1].lower()
-            if ext in {'png', 'jpg', 'jpeg'}:
-                fname = f"logo.{ext}"
-                lpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
-                logo.save(lpath)
-                set_setting('logo_path', lpath)
+        if 'logo' in request.files:
+            logo = request.files['logo']
+            if logo and logo.filename:
+                ext = logo.filename.rsplit('.', 1)[-1].lower()
+                if ext in {'png', 'jpg', 'jpeg'}:
+                    fname = f"logo.{ext}"
+                    lpath = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+                    logo.save(lpath)
+                    set_setting('logo_path', lpath)
         flash('Settings saved.', 'success')
         return redirect(url_for('settings'))
 
@@ -1092,6 +1125,7 @@ def add_user():
     if not username:
         flash('Username is required.', 'error')
         return redirect(url_for('settings'))
+
     if User.query.filter_by(username=username).first():
         flash(f'Username "{username}" already exists.', 'error')
         return redirect(url_for('settings'))
@@ -1112,8 +1146,7 @@ def toggle_user(uid):
     if user and user.id != current_user.id:
         user.is_active = not user.is_active
         db.session.commit()
-        state = 'activated' if user.is_active else 'deactivated'
-        flash(f'User "{user.username}" {state}.', 'success')
+        flash(f'User "{user.username}" {"activated" if user.is_active else "deactivated"}.', 'success')
     return redirect(url_for('settings'))
 
 
@@ -1124,13 +1157,19 @@ def toggle_user(uid):
 @app.route('/delete/school-member/<int:member_id>', methods=['POST'])
 @login_required
 def delete_school_member(member_id):
-    member = db.session.get(SchoolMember, member_id) or abort(404)
+    member = db.session.get(SchoolMember, member_id)
+    if not member:
+        abort(404)
     school_id = member.school_id
-    remove_qr(member.qr_path)
+    # Remove QR file
+    if member.qr_path:
+        qr = os.path.join(app.config['UPLOAD_FOLDER'], member.qr_path)
+        if os.path.exists(qr):
+            os.remove(qr)
     name = member.full_name
     db.session.delete(member)
     db.session.commit()
-    flash(f'Member "{name}" deleted.', 'success')
+    flash(f'Member "{name}" has been deleted.', 'success')
     return redirect(url_for('view_school', school_id=school_id))
 
 
@@ -1138,26 +1177,37 @@ def delete_school_member(member_id):
 @login_required
 @admin_required
 def delete_school(school_id):
-    school = db.session.get(School, school_id) or abort(404)
+    school = db.session.get(School, school_id)
+    if not school:
+        abort(404)
+    # Remove all QR files for members
     for m in school.members:
-        remove_qr(m.qr_path)
+        if m.qr_path:
+            qr = os.path.join(app.config['UPLOAD_FOLDER'], m.qr_path)
+            if os.path.exists(qr):
+                os.remove(qr)
     name = school.name
     db.session.delete(school)
     db.session.commit()
-    flash(f'School "{name}" and all members permanently deleted.', 'success')
+    flash(f'School "{name}" and all its members have been permanently deleted.', 'success')
     return redirect(url_for('list_schools'))
 
 
 @app.route('/delete/family-member/<int:member_id>', methods=['POST'])
 @login_required
 def delete_family_member(member_id):
-    member = db.session.get(FamilyMember, member_id) or abort(404)
+    member = db.session.get(FamilyMember, member_id)
+    if not member:
+        abort(404)
     family_id = member.family_id
-    remove_qr(member.qr_path)
+    if member.qr_path:
+        qr = os.path.join(app.config['UPLOAD_FOLDER'], member.qr_path)
+        if os.path.exists(qr):
+            os.remove(qr)
     name = member.full_name
     db.session.delete(member)
     db.session.commit()
-    flash(f'Family member "{name}" deleted.', 'success')
+    flash(f'Family member "{name}" has been deleted.', 'success')
     return redirect(url_for('view_family', family_id=family_id))
 
 
@@ -1165,26 +1215,36 @@ def delete_family_member(member_id):
 @login_required
 @admin_required
 def delete_family(family_id):
-    family = db.session.get(Family, family_id) or abort(404)
+    family = db.session.get(Family, family_id)
+    if not family:
+        abort(404)
     for m in family.members:
-        remove_qr(m.qr_path)
+        if m.qr_path:
+            qr = os.path.join(app.config['UPLOAD_FOLDER'], m.qr_path)
+            if os.path.exists(qr):
+                os.remove(qr)
     name = family.family_name
     db.session.delete(family)
     db.session.commit()
-    flash(f'Family "{name}" and all members permanently deleted.', 'success')
+    flash(f'Family "{name}" and all its members have been permanently deleted.', 'success')
     return redirect(url_for('list_families'))
 
 
 @app.route('/delete/org-member/<int:member_id>', methods=['POST'])
 @login_required
 def delete_org_member(member_id):
-    member = db.session.get(OrgMember, member_id) or abort(404)
+    member = db.session.get(OrgMember, member_id)
+    if not member:
+        abort(404)
     org_id = member.org_id
-    remove_qr(member.qr_path)
+    if member.qr_path:
+        qr = os.path.join(app.config['UPLOAD_FOLDER'], member.qr_path)
+        if os.path.exists(qr):
+            os.remove(qr)
     name = member.full_name
     db.session.delete(member)
     db.session.commit()
-    flash(f'Member "{name}" deleted.', 'success')
+    flash(f'Member "{name}" has been deleted.', 'success')
     return redirect(url_for('view_organization', org_id=org_id))
 
 
@@ -1192,71 +1252,80 @@ def delete_org_member(member_id):
 @login_required
 @admin_required
 def delete_organization(org_id):
-    org = db.session.get(Organization, org_id) or abort(404)
+    org = db.session.get(Organization, org_id)
+    if not org:
+        abort(404)
     for m in org.members:
-        remove_qr(m.qr_path)
+        if m.qr_path:
+            qr = os.path.join(app.config['UPLOAD_FOLDER'], m.qr_path)
+            if os.path.exists(qr):
+                os.remove(qr)
     name = org.name
     db.session.delete(org)
     db.session.commit()
-    flash(f'Organization "{name}" and all members permanently deleted.', 'success')
+    flash(f'Organization "{name}" and all its members have been permanently deleted.', 'success')
     return redirect(url_for('list_organizations'))
 
 
 @app.route('/delete/individual/<int:ind_id>', methods=['POST'])
 @login_required
 def delete_individual(ind_id):
-    ind = db.session.get(Individual, ind_id) or abort(404)
-    remove_qr(ind.qr_path)
+    ind = db.session.get(Individual, ind_id)
+    if not ind:
+        abort(404)
+    if ind.qr_path:
+        qr = os.path.join(app.config['UPLOAD_FOLDER'], ind.qr_path)
+        if os.path.exists(qr):
+            os.remove(qr)
     name = ind.full_name
     db.session.delete(ind)
     db.session.commit()
-    flash(f'Individual "{name}" deleted.', 'success')
+    flash(f'Individual "{name}" has been deleted.', 'success')
     return redirect(url_for('list_individuals'))
 
 
 # ─────────────────────────────────────────────
-# JSON / AUTO-SUGGEST API
+# API ENDPOINTS (for auto-suggest)
 # ─────────────────────────────────────────────
 
 @app.route('/api/schools')
 @login_required
 def api_schools():
-    q    = request.args.get('q', '')
-    rows = School.query.filter(School.name.ilike(f'%{q}%')).limit(10).all()
-    return jsonify([{'id': s.id, 'name': s.name, 'location': s.location} for s in rows])
+    q = request.args.get('q', '')
+    schools = School.query.filter(School.name.ilike(f'%{q}%')).limit(10).all()
+    return jsonify([{'id': s.id, 'name': s.name, 'location': s.location} for s in schools])
 
 
 @app.route('/api/families')
 @login_required
 def api_families():
-    q    = request.args.get('q', '')
-    rows = Family.query.filter(Family.family_name.ilike(f'%{q}%')).limit(10).all()
-    return jsonify([{'id': f.id, 'name': f.family_name} for f in rows])
+    q = request.args.get('q', '')
+    fams = Family.query.filter(Family.family_name.ilike(f'%{q}%')).limit(10).all()
+    return jsonify([{'id': f.id, 'name': f.family_name} for f in fams])
 
 
 @app.route('/api/orgs')
 @login_required
 def api_orgs():
-    q    = request.args.get('q', '')
-    rows = Organization.query.filter(Organization.name.ilike(f'%{q}%')).limit(10).all()
-    return jsonify([{'id': o.id, 'name': o.name} for o in rows])
+    q = request.args.get('q', '')
+    orgs = Organization.query.filter(Organization.name.ilike(f'%{q}%')).limit(10).all()
+    return jsonify([{'id': o.id, 'name': o.name} for o in orgs])
 
 
 @app.route('/api/check-duplicate')
 @login_required
 def api_check_duplicate():
-    name  = request.args.get('name', '').strip()
-    cat   = request.args.get('category', 'individual')
-    found = False
-    if cat == 'individual':
-        found = bool(Individual.query.filter(
-            func.lower(Individual.full_name) == name.lower()).first())
-    elif cat == 'school_member':
-        found = bool(SchoolMember.query.filter(
-            func.lower(SchoolMember.full_name) == name.lower()).first())
-    elif cat == 'family_member':
-        found = bool(FamilyMember.query.filter(
-            func.lower(FamilyMember.full_name) == name.lower()).first())
+    name     = request.args.get('name', '').strip()
+    category = request.args.get('category', 'individual')
+    found    = False
+
+    if category == 'individual':
+        found = Individual.query.filter(func.lower(Individual.full_name) == name.lower()).first() is not None
+    elif category == 'school_member':
+        found = SchoolMember.query.filter(func.lower(SchoolMember.full_name) == name.lower()).first() is not None
+    elif category == 'family_member':
+        found = FamilyMember.query.filter(func.lower(FamilyMember.full_name) == name.lower()).first() is not None
+
     return jsonify({'duplicate': found})
 
 
@@ -1268,21 +1337,22 @@ def init_db():
     with app.app_context():
         db.create_all()
 
+        # Create superadmin if not exists
         if not User.query.filter_by(role='superadmin').first():
             admin_pass = generate_password(16)
-            staff_pass = generate_password(14)
-
-            admin = User(username='superadmin',
-                         full_name='System Administrator', role='superadmin')
+            admin = User(username='superadmin', full_name='System Administrator',
+                         role='superadmin')
             admin.set_password(admin_pass)
+            db.session.add(admin)
 
-            staff = User(username='staffuser',
-                         full_name='Default Staff', role='staff')
+            staff_pass = generate_password(14)
+            staff = User(username='staffuser', full_name='Default Staff',
+                         role='staff')
             staff.set_password(staff_pass)
-
-            db.session.add_all([admin, staff])
+            db.session.add(staff)
             db.session.commit()
 
+            # Save credentials to file
             creds = (
                 "=" * 50 + "\n"
                 "STOPLIGHT SYSTEM — INITIAL CREDENTIALS\n"
@@ -1292,8 +1362,7 @@ def init_db():
                 "IMPORTANT: Change these passwords after first login.\n"
                 "=" * 50 + "\n"
             )
-            cred_path = os.path.join(BASE_DIR, 'CREDENTIALS.txt')
-            with open(cred_path, 'w') as cf:
+            with open(os.path.join(BASE_DIR, 'CREDENTIALS.txt'), 'w') as cf:
                 cf.write(creds)
             print(creds)
 
@@ -1304,5 +1373,4 @@ def init_db():
 
 if __name__ == '__main__':
     init_db()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(debug=True, host='0.0.0.0', port=5000)
