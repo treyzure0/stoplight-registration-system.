@@ -23,8 +23,7 @@ from werkzeug.utils import secure_filename
 from sqlalchemy import func, or_
 
 import qrcode
-import qrcode.image.svg
-from PIL import Image
+
 
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
@@ -35,7 +34,12 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
 import openpyxl
-import pandas as pd
+try:
+    import pandas as pd
+    PANDAS_OK = True
+except ImportError:
+    pd = None
+    PANDAS_OK = False
 
 # ─────────────────────────────────────────────
 # APP CONFIGURATION
