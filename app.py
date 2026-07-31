@@ -49,7 +49,19 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = secrets.token_hex(32)
-app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(BASE_DIR, 'stoplight.db')}"
+
+# Use DATABASE_URL from environment if set (e.g. Neon/Postgres in production).
+# Falls back to local SQLite file for local development.
+database_url = os.environ.get('DATABASE_URL')
+if database_url:
+    # Render/Neon/Heroku-style URLs sometimes start with postgres:// —
+    # SQLAlchemy 2.x requires the postgresql:// scheme.
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(BASE_DIR, 'stoplight.db')}"
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
